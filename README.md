@@ -1,2 +1,2 @@
 # bongrrative
-Dialouge library for Bevy Engine
+Dialouge library for Rust
