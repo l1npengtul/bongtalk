@@ -1,0 +1,122 @@
+WHITESPACE = _{ " " | "\t" }
+COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
+ARROW = _{ "=>" }
+SINGLE_ARROW = _{ "->" }
+PAREN_OPEN = _{ "(" }
+PAREN_CLOSE = _{ ")" }
+BLOCK_OPEN = _{ "{" }
+BLOCK_CLOSE = _{ "}" }
+SQUARE_OPEN = _{ "[" }
+SQUARE_CLOSE = _{ "]" }
+ANGLE_OPENR = _{ "<" }
+ANGLE_OPENL = _{ ">" }
+GREATER_OR_EQ = _{ ">=" }
+LESS_OR_EQ = _{ "<=" }
+EQUAL = _{ "=" }
+EQUALITY = _{ "==" }
+ISNOT = _{ "!=" }
+AND = _{ "&&" }
+OR = _{ "||" }
+COMMA = _{ "," }
+PIPE = _{ "|" }
+EXCL = _{ "!" }
+PRINT = _{ "*" }
+TRY = _{ "?" }
+CARROT = _{ "^" }
+COLON = _{ ":" }
+PERIOD = _{"."}
+UNDERSCORE = _{"_"}
+NAMESPACE = _{ "::" }
+
+identifier = @{
+    ASCII_ALPHA
+    ~ (ASCII_ALPHA | ASCII_DIGIT)+
+}
+
+namespaced_identifier = ${
+    identifier
+    ~ (NAMESPACE ~ identifier)*
+}
+
+integer = @{
+    "-"?
+    ~ ASCII_DIGIT+
+}
+float = @{
+    "-"?
+    ~ ( ASCII_DIGIT+? ~ "." ~ ASCII_DIGIT+? )
+}
+
+string = ${ "\"" ~ inner ~ "\"" }
+inner = @{ char* }
+char = {
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+
+choice_keyword = { "choice" }
+import_keyword = { "import" }
+
+import_statement = {
+    import_keyword ~ (identifier | namespaced_identifier)
+}
+
+rhai_expr = @{ "r" ~ SQUARE_OPEN ~ (!"]" ~ char)+ ~ SQUARE_CLOSE }
+
+tag = {
+    ("t" ~ BLOCK_OPEN ~ ANY ~ BLOCK_CLOSE) | ("t" ~ string)
+}
+
+tagged_string = @{
+    string
+    ~ (COLON ~ tag)?
+}
+
+character_string = @{ string ~ COLON ~ tagged_string }
+
+print_text = @{
+    ANGLE_OPENL ~ character_string
+}
+
+literal = _{
+    (integer | float | string | char)
+}
+
+array = @{
+    BLOCK_OPEN ~ literal ~ (COMMA ~ literal)+? ~ BLOCK_CLOSE
+}
+
+block_begin = @{ (SQUARE_OPEN ~ identifier ~ SQUARE_CLOSE) }
+block_call = {
+    SINGLE_ARROW ~ (identifier | namespaced_identifier)
+}
+
+valid = {
+    (rhai_expr | print_text | choice_text | raise_event | character_string | block_call | if_statement | array | identifier)
+}
+
+raise_event = @{
+    "!!"
+    ~ (character_string | string)
+}
+
+if_statement = {
+    ("if" ~ rhai_expr ~ BLOCK_OPEN ~ valid ~ BLOCK_CLOSE)
+    ~ ("elif" ~ rhai_expr ~ BLOCK_OPEN ~ valid ~ BLOCK_CLOSE)*?
+    ~ ("else" ~ rhai_expr ~ BLOCK_OPEN ~ valid ~ BLOCK_CLOSE)?
+}
+
+choice_text = {
+    choice_keyword ~ character_string ~ BLOCK_OPEN
+    ~ ("\n" ~ PAREN_OPEN ~ character_string ~ (COMMA ~ rhai_expr)? ~ PAREN_CLOSE ~ ARROW ~ (!(PAREN_OPEN) ~ valid | "\n")+ )+
+    ~ BLOCK_CLOSE
+}
+
+
+
+// block_start = { "{" }
+// block_end = { "}" }
+// operators = {
+//     "=>" | "=" | "@" | "!" | "*" | "&" | "^" | "%" | "#" | "$" | "+" | "-" | "!!" | "/" | "?" | "<" | ">"
+// }
