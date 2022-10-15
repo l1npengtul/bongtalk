@@ -53,8 +53,26 @@ float = @{
     ~ ( ASCII_DIGIT+? ~ "." ~ ASCII_DIGIT+? )
 }
 
-string = ${ "\"" ~ inner ~ "\"" }
-inner = @{ char* }
+boolean = { "true" | "false" }
+
+null = { "null" }
+
+map = {
+    "{" ~ "}" |
+    "{" ~ pair ~ ("," ~ pair)* ~ "}"
+}
+
+pair = { string ~ ":" ~ value }
+
+array = {
+    "[" ~ "]" |
+    "[" ~ value ~ ("," ~ value)* ~ "]"
+}
+
+json = { (map | array) }
+
+string = ${ "\"" ~ str_inner ~ "\"" }
+str_inner = @{ char* }
 char = {
     !("\"" | "\\") ~ ANY
     | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
@@ -79,7 +97,8 @@ import_statement = {
 rhai_expr = @{ "r" ~ SQUARE_OPEN ~ (!"]" ~ char)+ ~ SQUARE_CLOSE }
 
 tag = {
-    ("t" ~ BLOCK_OPEN ~ ANY ~ BLOCK_CLOSE) | ("t" ~ string)
+   "t"
+    ~ ( json | string )
 }
 
 tagged_string = @{
@@ -93,12 +112,12 @@ print_text = @{
     DOLLAR_SIGN ~ character_string ~ (PIPE ~ character_string)*
 }
 
-literal = _{
-    (integer | float | string | char)
+value = _{
+    (integer | float | string | array | map | boolean | null)
 }
 
-array = @{
-    BLOCK_OPEN ~ literal ~ (COMMA ~ literal)+? ~ BLOCK_CLOSE
+literal = _{
+    (value | tagged_string | character_string)
 }
 
 function_start = @{ (SQUARE_OPEN ~ (public_keyword ~ " ")? ~ (recorded_keyword ~ " ")? ~ identifier ~ SQUARE_CLOSE) }
@@ -133,7 +152,7 @@ choice_text = {
 }
 
 choice_pick_expr = {
-    PAREN_OPEN ~ print_text ~ (COMMA ~ rhai_expr)? ~ PAREN_CLOSE
+    PAREN_OPEN ~( tagged_string | array)~ (COMMA ~ rhai_expr)? ~ PAREN_CLOSE
 }
 
 choice_option = {
@@ -148,9 +167,3 @@ file = {
     ~ function_declare+
     ~ EOI
 }
-
-// block_start = { "{" }
-// block_end = { "}" }
-// operators = {
-//     "=>" | "=" | "@" | "!" | "*" | "&" | "^" | "%" | "#" | "$" | "+" | "-" | "!!" | "/" | "?" | "<" | ">"
-// }
