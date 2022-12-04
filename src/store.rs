@@ -4,7 +4,7 @@ use rhai::{FnCallExpr, Namespace};
 
 #[derive(Clone, Debug, Default, Hash, PartialEq)]
 pub struct FnTraversedStore {
-    internal: BTreeMap<u64, i32>
+    internal: BTreeMap<i64, i32>
 }
 
 impl FnTraversedStore {
@@ -43,3 +43,6 @@ impl FnTraversedStore {
 
     pub fn traversed(&self, fn_call: &FnCallExpr)
 }
+
+
+pub trait RhaiFnCall

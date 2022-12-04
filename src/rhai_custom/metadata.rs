@@ -1,4 +1,7 @@
-use serde::{Serialize, Deserialize};
+use crate::error::{BResult, BongTalkError};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 struct RhaiFnDef {
@@ -13,7 +16,7 @@ struct RhaiFnDef {
     pub r#type: String,
     #[serde(rename = "numParams")]
     pub num_params: i64,
-    pub params: Vec<Struct1>,
+    pub params: Vec<RhaiParams>,
     #[serde(rename = "returnType")]
     pub return_type: String,
     pub signature: String,
@@ -24,14 +27,13 @@ struct RhaiFnDef {
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RhaiModule {
     pub modules: HashMap<String, RhaiModule, ahash::RandomState>,
-    pub functions: Vec<RhaiFnDef>
+    pub functions: Vec<RhaiFnDef>,
 }
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RhaiParams {
-    pub params: Vec<(Option<String>, String)>
+    pub params: Vec<(Option<String>, String)>,
 }
-
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RhaiMetadata {
@@ -39,7 +41,8 @@ pub struct RhaiMetadata {
     pub functions: Vec<RhaiFnDef>,
 }
 
-pub fn generate_rhaifn_metadata(data: &str) -> Option<RhaiMetadata> {
+pub fn generate_rhaifn_metadata(data: &str) -> BResult<RhaiMetadata> {
+    serde_json::from_str(data).map_err(|why| BongTalkError::EngineInit(why.into()))
 }
 
 // test json
