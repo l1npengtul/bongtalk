@@ -6,10 +6,10 @@ use once_cell::sync::OnceCell;
 use rhai::Engine;
 use std::sync::{Arc, RwLock};
 #[cfg(not(target_arch = "wasm"))]
-use std::thread::{JoinHandle, spawn};
-use upon::Engine as UponEngine;
+use std::thread::{spawn, JoinHandle};
+use upon::{Engine as UponEngine, Template};
 #[cfg(all(target_arch = "wasm", target_feature = "wasm"))]
-use wasm_thread::{JoinHandle, spawn};
+use wasm_thread::{spawn, JoinHandle};
 
 enum ScriptReply {
     Continue,
@@ -34,6 +34,16 @@ struct SendRecv<T> {
     pub receiver: Arc<Receiver<T>>,
 }
 
+impl<T> SendRecv<T> {
+    pub fn new() -> Self {
+        let (send, recv) = flume::unbounded();
+        Self {
+            sender: Arc::new(send),
+            receiver: Arc::new(recv),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExecContext {
     pub traversed: Arc<DashMap<u64, u64>>,
@@ -47,9 +57,30 @@ pub struct BongTalk {
     from_thread: SendRecv<ScriptRequest>,
     to_thread: SendRecv<ScriptReply>,
     context: ExecContext,
-    thread: JoinHandle<()>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl BongTalk {
-    pub fn new
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    
+}
+
+impl Default for BongTalk {
+    fn default() -> Self {
+        Self {
+            rhai_engine: Arc::new(RwLock::new(Engine::new())),
+            template: Arc::new(RwLock::new(UponEngine::new())),
+            from_thread: SendRecv::new(),
+            to_thread: SendRecv::new(),
+            context: ExecContext {
+                traversed: Arc::new(Default::default()),
+                character: Arc::new(Default::default()),
+                state: Arc::new(Default::default()),
+            },
+            thread: None,
+        }
+    }
 }
