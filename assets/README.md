@@ -1,4 +1,4 @@
-The PNG files in this directory are licensed under the CC-BY-SA 4.0
+The PNG file in this directory is licensed under the CC-BY-SA 4.0
 
 This **excludes** works that simply use this crate (include inside Cargo.toml) - it only applies to direct forks or users of this image or repository. 
 
