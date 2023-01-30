@@ -1,6 +1,8 @@
+use rhai::Dynamic;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 macro_rules! from_into_cast {
     (
@@ -18,7 +20,7 @@ macro_rules! from_into_cast {
         impl From<$val> for Value {
             fn from(val: $val) -> Value {
                 Value::$src(
-                    $dest::from(val)
+                    (val)
                 )
             }
         }
@@ -27,7 +29,7 @@ macro_rules! from_into_cast {
         impl From<Value> for Option<$val> {
             fn from(val: Value) -> Option<$val> {
                 if let Value::$src(v) = val {
-                    return Some($val::from(v));
+                    return Some(<$val>::from(v));
                 }
                 None
             }
@@ -37,7 +39,7 @@ macro_rules! from_into_cast {
         impl From<&Value> for Option<&$val> {
             fn from(val: &Value) -> Option<&$val> {
                 if let Value::$src(v) = val {
-                    return Some($val::from(v));
+                    return Some(<$val>::from(v));
                 }
                 None
             }
@@ -47,7 +49,7 @@ macro_rules! from_into_cast {
         impl From<&Value> for Option<$val> {
             fn from(val: &Value) -> Option<$val> {
                 if let Value::$src(v) = val {
-                    return Some($val::from(v.clone()));
+                    return Some(<$val>::from(v.clone()));
                 }
                 None
             }
@@ -175,6 +177,33 @@ impl Display for Value {
 }
 
 impl Value {}
+
+impl From<Value> for Dynamic {
+    fn from(value: Value) -> Self {
+        match value {
+            Value::Null => Dynamic::UNIT,
+            Value::Bool(b) => Dynamic::from_bool(b),
+            Value::Float(f) => Dynamic::from_float(f),
+            Value::Int(i) => Dynamic::from_int(i),
+            Value::String(s) => Dynamic::from_str(&s),
+            Value::Array(a) => a.into(),
+            Value::Map(m) => m.into(),
+        }
+    }
+}
+impl From<&Value> for Dynamic {
+    fn from(value: &Value) -> Self {
+        match value {
+            Value::Null => Dynamic::UNIT,
+            Value::Bool(b) => Dynamic::from_bool(*b),
+            Value::Float(f) => Dynamic::from_float(*f),
+            Value::Int(i) => Dynamic::from_int(*i),
+            Value::String(s) => Dynamic::from_str(s),
+            Value::Array(a) => a.into(),
+            Value::Map(m) => m.into(),
+        }
+    }
+}
 
 from_into_cast!(
     (Bool, bool,),
