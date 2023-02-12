@@ -1,46 +1,31 @@
-use crate::keyed::Keyed;
-use rhai::{Dynamic, EvalAltResult, Identifier, Map};
+use crate::keyed::{Keyed, KeyedRef};
+use rhai::{Dynamic, EvalAltResult, Map};
 
 pub trait BongTalkStd {
-    fn event(identifier: String, message: Dynamic);
+    fn event(&self, identifier: &str, message: Dynamic);
 
-    fn lang() -> String;
+    fn lang(&self) -> &str;
 
-    fn set_lang(key: String) -> bool;
+    fn say(&self, character: Option<&str>, message: Dynamic) -> Result<(), EvalAltResult>;
 
-    fn say(character: Option<String>, message: Dynamic) -> Result<(), EvalAltResult>;
+    fn set(&self, value: Dynamic) -> Result<Dynamic, EvalAltResult>;
 
-    fn set(value: Dynamic) -> Result<Dynamic, EvalAltResult>;
+    fn get(&self, identifier: &str) -> Option<Dynamic>;
 
-    fn get(identifier: String) -> Option<Dynamic>;
-
-    fn traversed(identifier: String) -> i64;
+    fn traversed(&self, identifier: &str) -> i64;
 
     fn choice(
-        identifier: String,
-        message: String,
-        choices: &[String],
+        &self,
+        identifier: &str,
+        message: &str,
+        choices: &[&str],
     ) -> Result<String, EvalAltResult>;
 
-    fn sleep(time: i64);
+    fn sleep(&self, time: i64);
 
-    fn new_character(
-        identifier: String,
-        special: bool,
-        name: Dynamic,
-        speech_prefix: Dynamic,
-        speech_postfix: Dynamic,
-        name_prefix: Dynamic,
-        name_postfix: Dynamic,
-    ) -> Result<(), EvalAltResult>;
+    fn character_exists(&self, identifier: &str) -> bool;
 
-    fn character_exists(identifier: String) -> bool;
+    fn key<'a>(&self, key: &str, alt: Option<&str>) -> KeyedRef<'a>;
 
-    fn delete_character(identifier: String);
-
-    fn key(key: String, alt: Option<String>) -> Keyed;
-
-    fn translation_exists(key: String, language: String) -> bool;
+    fn translation_exists(&self, key: &KeyedRef, language: &str) -> bool;
 }
-
-pub struct BongTalkStandard<'a> {}

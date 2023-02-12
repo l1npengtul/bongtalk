@@ -1,48 +1,30 @@
-use std::{collections::BTreeMap, hash::{Hash, Hasher}};
-use ahash::AHasher;
-use rhai::{FnCallExpr, Namespace};
+use ahash::RandomState;
+use std::{collections::HashMap, hash::Hash};
 
 #[derive(Clone, Debug, Default, Hash, PartialEq)]
-pub struct FnTraversedStore {
-    internal: BTreeMap<i64, i32>
+pub struct TraversedStore {
+    internal: HashMap<i64, i64, RandomState>,
 }
 
-impl FnTraversedStore {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub(crate) fn add_traversal(&mut self, fn_call: &FnCallExpr) {
-        let mut namespace = (&fn_call.namespace).iter().map(ToString::to_string).collect::<String>();
-        namespace = namespace + (&fn_call.name).as_str();
-
-        let mut hasher = AHasher::default();
-        namespace.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        match self.internal.get_mut(&hash) {
-            Some(cnt) => {
-                *cnt += 1;
-            }
-            None => {
-                let _ = self.internal.insert(hash, 1);
-            }
+impl TraversedStore {
+    pub fn new() -> TraversedStore {
+        TraversedStore {
+            internal: HashMap::with_hasher(RandomState::new()),
         }
     }
 
-    pub(crate) fn set_traversal(&mut self, fn_call: &FnCallExpr, new: i32) {
-        match self.internal.get_mut(&hash) {
-            Some(cnt) => {
-                *cnt = new;
+    pub fn get(&self, id: i64) -> i64 {
+        self.internal.get(&id).map(|x| *x).unwrap_or(0)
+    }
+
+    pub fn add(&mut self, id: i64) {
+        match self.internal.get_mut(&id) {
+            Some(v) => {
+                *v += 1;
             }
             None => {
-                let _ = self.internal.insert(hash, new);
+                self.internal.insert(id, 1);
             }
         }
     }
-
-    pub fn traversed(&self, fn_call: &FnCallExpr)
 }
-
-
-pub trait RhaiFnCall
