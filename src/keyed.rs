@@ -49,3 +49,9 @@ impl<'a> KeyedRef<'a> {
         self.alt
     }
 }
+
+#[derive(Clone, Debug, PartialOrd, PartialEq)]
+pub(crate) enum KeyedOrRaw {
+    Keyed(Keyed),
+    Raw(String),
+}

@@ -19,6 +19,7 @@ ahash = "0.8"
 flume = "0.10"
 dashmap = "5.4"
 moka = "0.10"
+parking_lot = "0.12"
 
 [dependencies.serde]
 version = "1.0"
