@@ -45,10 +45,10 @@ pub struct ScriptData {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BongTalkContext {
-    scripts: Arc<HashMap<String, Arc<AST>, RandomState>>,
-    script_data: Arc<DashMap<String, Arc<RwLock<ScriptData>>, RandomState>>,
-    global_data: Arc<DashMap<String, Arc<RwLock<Value>>, RandomState>>,
-    characters: Arc<DashMap<String, Arc<RwLock<Character>>, RandomState>>,
+    scripts: Arc<DashMap<String, Arc<RwLock<AST>>, RandomState>>,
+    script_data: HashMap<String, Arc<RwLock<ScriptData>>, RandomState>,
+    global_data: Arc<DashMap<String, Value, RandomState>>,
+    characters: Arc<DashMap<String, Character, RandomState>>,
     rhai_engine: Arc<RwLock<Engine>>,
     template: Arc<RwLock<TinyTemplate<'static>>>,
     run_counter: Arc<AtomicU32>,
