@@ -1,3 +1,4 @@
+use crate::character::CharacterRef;
 use crate::error::BongTalkError;
 use crate::keyed::KeyedOrRaw;
 use crate::{
@@ -9,17 +10,20 @@ use ahash::RandomState;
 use dashmap::DashMap;
 use flume::{Receiver, Sender};
 use parking_lot::RwLock;
+use rhai::debugger::{BreakPoint, Debugger, DebuggerEvent};
 use rhai::{
-    debugger::DebuggerCommand, Engine, EvalAltResult, ImmutableString, Module, ModuleResolver,
-    Position, Shared, AST,
+    debugger::DebuggerCommand, Dynamic, Engine, EvalAltResult, ImmutableString, LexError, Map,
+    Module, ModuleResolver, Position, Shared, Variant, AST,
 };
+use smartstring::{LazyCompact, SmartString};
+use std::str::FromStr;
 #[cfg(not(all(feature = "wasm", target_arch = "wasm")))]
 use std::thread::*;
 use std::{collections::HashMap, sync::Arc};
-use rhai::debugger::Debugger;
 use tinytemplate::TinyTemplate;
 #[cfg(all(feature = "wasm", target_arch = "wasm"))]
 use wasm_thread::*;
+
 pub enum ControlMessage {}
 
 pub enum EventMessage {
@@ -85,24 +89,261 @@ impl Iterator for ScriptReading {
     }
 }
 
+#[allow(deprecated)]
 fn reading_fn(
-    scripts: Arc<DashMap<String, Arc<RwLock<AST>>, RandomState>>,
-    global_data: Arc<DashMap<String, Value, RandomState>>,
-    character: Arc<DashMap<String, Arc<RwLock<Character>>, RandomState>>,
+    script: String,
+    scripts: Arc<DashMap<SmartString<LazyCompact>, Arc<RwLock<AST>>, RandomState>>,
+    global_data: Arc<DashMap<SmartString<LazyCompact>, Value, RandomState>>,
+    character: Arc<DashMap<SmartString<LazyCompact>, Character, RandomState>>,
     script_data: Arc<RwLock<ScriptData>>,
     control: Receiver<ControlMessage>,
     event: Sender<EventMessage>,
 ) {
     let mut engine = Engine::new();
-    let resolver = HashmapResolver { data: scripts.clone() };
+    let resolver = HashmapResolver {
+        data: scripts.clone(),
+    };
+
+    // ex)
+    // [expression] face <character> says <text> with_extra [metadata]
+    // this gets parsed with <character> says <text> => TextSayThing, with modifications on top
+
+    engine
+        .register_custom_operator("says", 20)
+        .expect("Failed to register custom operator! This is a bug, please report it!");
+    engine.register_fn("says", |character: &Dynamic, text: &Dynamic| {
+        // resolve character
+        // TODO
+    });
+
+    engine
+        .register_custom_operator("face", 10)
+        .expect("Failed to register custom operator! This is a bug, please report it!");
+    engine.register_fn("face", |expression: &str, text_say: &Dynamic| {
+        // TODO
+    });
+
+    engine
+        .register_custom_operator("with_extra", 5)
+        .expect("Failed to register custom operator! This is a bug, please report it!");
+    engine.register_fn("with_extra", |text_say: &Dynamic, data: &Dynamic| {
+        // TODO
+    });
+
+    // global/local data stores
+
+    engine.register_fn("get", |key: &str| -> Option<&Dynamic> {
+        script_data
+            .read()
+            .local_kv_store
+            .get(key.into())
+            .map(|val| val.into())
+    });
+
+    engine.register_fn("set", |key: &str, value: Dynamic| -> Option<&Dynamic> {
+        script_data
+            .write()
+            .local_kv_store
+            .insert(key.into(), value.into())
+            .map(|v| v.into())
+    });
+
+    engine.register_fn("remove", |key: &str| {
+        script_data.write().local_kv_store.remove(key)
+    });
+
+    engine.register_fn("clear_all", || script_data.write().local_kv_store.clear());
+
+    engine.register_fn("get_global", |key: &str| -> Option<&Dynamic> {
+        global_data.get(key.into()).map(|val| val.into())
+    });
+
+    engine.register_fn(
+        "set_global",
+        |key: &str, value: Dynamic| -> Option<&Dynamic> {
+            global_data
+                .insert(key.into(), value.into())
+                .map(|v| v.into())
+        },
+    );
+
+    engine.register_fn("remove_global", |key: &str| global_data.remove(key));
+
+    engine.register_fn("clear_global", || global_data.clear());
+
+    // traversals
+
+    engine.register_fn("traversed", |function: &str| -> i64 {
+        script_data.read().traversals.get(function.into())
+    });
+
+    // character
+    engine
+        .register_type_with_name::<CharacterRef>("Character")
+        .register_get_set(
+            "name",
+            |shelf: &mut CharacterRef| -> Option<&str> {
+                character
+                    .get(shelf.identifier.as_str())
+                    .map(|x| &x.value().name.into())
+            },
+            |shelf: &mut CharacterRef, value: &str| {
+                character
+                    .get_mut(shelf.identifier.as_str())
+                    .map(|mut x| x.value_mut().set_name(value));
+            },
+        )
+        .register_get_set(
+            "special",
+            |shelf: &mut CharacterRef| -> Option<bool> {
+                character
+                    .get(shelf.identifier.as_str())
+                    .map(|x| x.value().special)
+            },
+            |shelf: &mut CharacterRef, value: bool| {
+                character
+                    .get_mut(shelf.identifier.as_str())
+                    .map(|mut x| x.value_mut().set_is_special(value));
+            },
+        )
+        .register_get_set(
+            "name_prefix",
+            |shelf: &mut CharacterRef| -> Option<&str> {
+                character
+                    .get(shelf.identifier.as_str())
+                    .map(|x| x.value().name_prefix())
+                    .flatten()
+            },
+            |shelf: &mut CharacterRef, value: &str| {
+                character
+                    .get_mut(shelf.identifier.as_str())
+                    .map(|mut x| x.value_mut().set_name_prefix(value.to_string()));
+            },
+        )
+        .register_fn("clear_name_prefix", |shelf: &mut CharacterRef| {
+            character
+                .get_mut(shelf.identifier.as_str())
+                .map(|mut x| x.value_mut().clear_name_prefix());
+        })
+        .register_get_set(
+            "name_postfix",
+            |shelf: &mut CharacterRef| -> Option<&str> {
+                character
+                    .get(shelf.identifier.as_str())
+                    .map(|x| x.value().name_postfix())
+                    .flatten()
+            },
+            |shelf: &mut CharacterRef, value: &str| {
+                character
+                    .get_mut(shelf.identifier.as_str())
+                    .map(|mut x| x.value_mut().set_name_postfix(value.to_string()));
+            },
+        )
+        .register_fn("clear_name_postfix", |shelf: &mut CharacterRef| {
+            character
+                .get_mut(shelf.identifier.as_str())
+                .map(|mut x| x.value_mut().clear_name_postfix());
+        })
+        .register_get_set(
+            "speech_prefix",
+            |shelf: &mut CharacterRef| -> Option<&str> {
+                character
+                    .get(shelf.identifier.as_str())
+                    .map(|x| x.value().speech_prefix())
+                    .flatten()
+            },
+            |shelf: &mut CharacterRef, value: &str| {
+                character
+                    .get_mut(shelf.identifier.as_str())
+                    .map(|mut x| x.value_mut().set_speech_prefix(value.to_string()));
+            },
+        )
+        .register_fn("clear_speech_prefix", |shelf: &mut CharacterRef| {
+            character
+                .get_mut(shelf.identifier.as_str())
+                .map(|mut x| x.value_mut().clear_speech_prefix());
+        })
+        .register_get_set(
+            "speech_postfix",
+            |shelf: &mut CharacterRef| -> Option<&str> {
+                character
+                    .get(shelf.identifier.as_str())
+                    .map(|x| x.value().speech_postfix())
+                    .flatten()
+            },
+            |shelf: &mut CharacterRef, value: &str| {
+                character
+                    .get_mut(shelf.identifier.as_str())
+                    .map(|mut x| x.value_mut().set_speech_postfix(value.to_string()));
+            },
+        )
+        .register_fn("clear_speech_postfix", |shelf: &mut CharacterRef| {
+            character
+                .get_mut(shelf.identifier.as_str())
+                .map(|mut x| x.value_mut().clear_speech_postfix());
+        })
+        .register_fn(
+            "get_value",
+            |shelf: &mut CharacterRef, key: &ImmutableString| -> Option<&Dynamic> {
+                character
+                    .get(shelf.identifier.as_str())
+                    .map(|x| x.value().get_dynamic(key.into()))
+                    .flatten()
+            },
+        )
+        .register_fn(
+            "set_value",
+            |shelf: &mut CharacterRef,
+             key: &ImmutableString,
+             value: &Dynamic|
+             -> Option<&Dynamic> {
+                character
+                    .get_mut(shelf.identifier.as_str())
+                    .map(|mut x| x.value_mut().set_dynamic(key.into(), value))
+                    .flatten()
+            },
+        )
+        .register_fn("still_exists", |shelf: &mut CharacterRef| -> bool {
+            character.contains_key(shelf.identifier.into())
+        });
+
+    engine.register_fn("character_exists", |key: &str| -> bool {
+        character.contains_key(key)
+    });
+
+    engine.register_fn("get_character", |key: &str| -> Option<CharacterRef> {
+        if let Some(character) = character.get(key) {
+            Some(CharacterRef {
+                identifier: character.identifier.clone(),
+            })
+        } else {
+            None
+        }
+    });
+
+    // choices custom syntax
+
+    let functions = scripts
+        .iter()
+        .map(|x| x.value().read())
+        .flat_map(|ast| ast.iter_fn_def())
+        .filter(|fx| fx.access.is_public())
+        .map(|x| BreakPoint::AtFunctionName {
+            name: x.name.clone(),
+            enabled: false,
+        });
     engine.set_module_resolver(resolver);
     engine.register_debugger(
-        |eng, debugger| {
-            Debugger::
-        }
-    )
-
-
+        |eng, debugger| debugger,
+        |ctx, event, node, source, position| match event {
+            DebuggerEvent::Start => {}
+            DebuggerEvent::Step => {}
+            DebuggerEvent::BreakPoint(_) => {}
+            DebuggerEvent::FunctionExitWithValue(_) => {}
+            DebuggerEvent::FunctionExitWithError(_) => {}
+            DebuggerEvent::End => {}
+        },
+    );
 }
 
 struct HashmapResolver {

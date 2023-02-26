@@ -11,6 +11,7 @@ use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
 use rhai::{Engine, AST};
 use serde::{Deserialize, Serialize};
+use smartstring::{Compact, LazyCompact, SmartString, SmartStringMode};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
@@ -41,14 +42,15 @@ enum ScriptRequest {
 
 pub struct ScriptData {
     pub traversals: TraversedStore,
+    pub local_kv_store: BTreeMap<SmartString<Compact>, Value>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BongTalkContext {
-    scripts: Arc<DashMap<String, Arc<RwLock<AST>>, RandomState>>,
-    script_data: HashMap<String, Arc<RwLock<ScriptData>>, RandomState>,
-    global_data: Arc<DashMap<String, Value, RandomState>>,
-    characters: Arc<DashMap<String, Character, RandomState>>,
+    scripts: Arc<DashMap<SmartString<LazyCompact>, Arc<RwLock<AST>>, RandomState>>,
+    script_data: HashMap<SmartString<LazyCompact>, Arc<RwLock<ScriptData>>, RandomState>,
+    global_data: Arc<DashMap<SmartString<LazyCompact>, Value, RandomState>>,
+    characters: Arc<DashMap<SmartString<LazyCompact>, Character, RandomState>>,
     rhai_engine: Arc<RwLock<Engine>>,
     template: Arc<RwLock<TinyTemplate<'static>>>,
     run_counter: Arc<AtomicU32>,

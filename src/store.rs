@@ -1,30 +1,38 @@
-use ahash::RandomState;
-use std::{collections::HashMap, hash::Hash};
+use smartstring::{LazyCompact, SmartString};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, Hash, PartialEq)]
 pub struct TraversedStore {
-    internal: HashMap<i64, i64, RandomState>,
+    internal: BTreeMap<SmartString<LazyCompact>, i64>,
 }
 
 impl TraversedStore {
     pub fn new() -> TraversedStore {
         TraversedStore {
-            internal: HashMap::with_hasher(RandomState::new()),
+            internal: BTreeMap::new(),
         }
     }
 
-    pub fn get(&self, id: i64) -> i64 {
-        self.internal.get(&id).map(|x| *x).unwrap_or(0)
+    pub fn get(&self, id: &SmartString<LazyCompact>) -> i64 {
+        self.internal.get(id).map(|x| *x).unwrap_or(0)
     }
 
-    pub fn add(&mut self, id: i64) {
+    pub fn add(&mut self, id: &SmartString<LazyCompact>) {
         match self.internal.get_mut(&id) {
             Some(v) => {
                 *v += 1;
             }
             None => {
-                self.internal.insert(id, 1);
+                self.internal.insert(id.clone(), 1);
             }
         }
+    }
+
+    pub fn remove(&mut self, id: &SmartString<LazyCompact>) {
+        self.remove(id)
+    }
+
+    pub fn clear(&mut self) {
+        self.clear()
     }
 }
