@@ -17,6 +17,12 @@ impl TraversedStore {
         self.internal.get(id).map(|x| *x).unwrap_or(0)
     }
 
+    pub fn reset(&mut self, id: &SmartString<LazyCompact>) {
+        if let Some(cnt) = self.internal.get_mut(id) {
+            *cnt = 0;
+        }
+    }
+
     pub fn add(&mut self, id: &SmartString<LazyCompact>) {
         match self.internal.get_mut(&id) {
             Some(v) => {

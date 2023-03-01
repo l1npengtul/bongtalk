@@ -12,8 +12,9 @@ use flume::{Receiver, Sender};
 use parking_lot::RwLock;
 use rhai::debugger::{BreakPoint, Debugger, DebuggerEvent};
 use rhai::{
-    debugger::DebuggerCommand, Dynamic, Engine, EvalAltResult, ImmutableString, LexError, Map,
-    Module, ModuleResolver, Position, Shared, Variant, AST,
+    debugger::DebuggerCommand, ASTNode, Dynamic, Engine, EvalAltResult, Expr, ImmutableString,
+    LexError, Map, Module, ModuleResolver, ParseError, ParseErrorType, Position, Shared, Stmt,
+    Variant, AST,
 };
 use smartstring::{LazyCompact, SmartString};
 use std::str::FromStr;
@@ -92,7 +93,7 @@ impl Iterator for ScriptReading {
 #[allow(deprecated)]
 fn reading_fn(
     script: String,
-    scripts: Arc<DashMap<SmartString<LazyCompact>, Arc<RwLock<AST>>, RandomState>>,
+    scripts: Arc<DashMap<SmartString<LazyCompact>, AST, RandomState>>,
     global_data: Arc<DashMap<SmartString<LazyCompact>, Value, RandomState>>,
     character: Arc<DashMap<SmartString<LazyCompact>, Character, RandomState>>,
     script_data: Arc<RwLock<ScriptData>>,
@@ -119,7 +120,7 @@ fn reading_fn(
     engine
         .register_custom_operator("face", 10)
         .expect("Failed to register custom operator! This is a bug, please report it!");
-    engine.register_fn("face", |expression: &str, text_say: &Dynamic| {
+    engine.register_fn("face", |expression: &Dynamic, text_say: &Dynamic| {
         // TODO
     });
 
@@ -175,6 +176,10 @@ fn reading_fn(
 
     engine.register_fn("traversed", |function: &str| -> i64 {
         script_data.read().traversals.get(function.into())
+    });
+
+    engine.register_fn("reset_traversed", |function: &str| {
+        script_data.write().traversals.reset(function.into());
     });
 
     // character
@@ -323,25 +328,107 @@ fn reading_fn(
 
     // choices custom syntax
 
-    let functions = scripts
-        .iter()
-        .map(|x| x.value().read())
-        .flat_map(|ast| ast.iter_fn_def())
-        .filter(|fx| fx.access.is_public())
-        .map(|x| BreakPoint::AtFunctionName {
-            name: x.name.clone(),
-            enabled: false,
-        });
+    engine.register_custom_syntax_with_state_raw(
+        "choice",
+        |symbols, look_ahead, state| {
+            if !state.is_map() {
+                let tag = state.tag();
+                *state = Dynamic::from_map(Map::new());
+                state.set_tag(tag);
+            }
+
+            if symbols.len() == 1 {
+                state.set_tag(0);
+                return Ok(Some("$expr$".into()));
+            } else if symbols.len() == 2 {
+                return Ok(Some("{".into()));
+            } else if symbols.len() == 3 {
+                return Ok(Some("$expr$".into()));
+            }
+
+            if state.tag() == 0 {
+                state.set_tag(1);
+                return Ok(Some("=>".into()));
+            } else if state.tag() == 1 {
+                state.set_tag(2);
+                return Ok(Some("$block$".into()));
+            } else if state.tag() == 2 {
+                let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+                let this_len = (symbols.len() / 3) - 2;
+                let ilen = symbols.len() - 1 as u32;
+                state_map.insert(this_len.into(), vec![ilen - 2, ilen].into());
+                return if look_ahead == "}" {
+                    let state_map = state.as_any().downcast_ref::<Map>().unwrap().keys().len() - 1;
+                    state.set_tag(state_map as i32);
+                    Ok(None)
+                } else {
+                    Ok(Some("$expr$".into()))
+                };
+            }
+
+            return Err(ParseError(
+                Box::from(ParseErrorType::BadInput(LexError::UnexpectedInput(
+                    "Unknown state?".into(),
+                ))),
+                Position::NONE,
+            ));
+        },
+        false,
+        |context, inputs, state| {
+            let counts = state.tag();
+
+            let ask = context.eval_expression_tree(
+                inputs
+                    .get(0)
+                    .ok_or(Err("Key Expression Missing".to_string()))?,
+            )?;
+            let mut options =
+                HashMap::with_capacity_and_hasher(counts as usize, RandomState::new());
+            for (_, value) in state.as_any().downcast_ref::<Map>().unwrap() {
+                if let Ok(lenarr) = value.into_typed_array::<u32>() {
+                    let keyed = context.eval_expression_tree(&inputs[lenarr[0] as usize])?;
+                    let block_run = &inputs[lenarr[1] as usize];
+                    options.insert(keyed, block_run);
+                }
+            }
+
+            // TODO: implement ask
+        },
+    );
+
     engine.set_module_resolver(resolver);
     engine.register_debugger(
-        |eng, debugger| debugger,
-        |ctx, event, node, source, position| match event {
-            DebuggerEvent::Start => {}
-            DebuggerEvent::Step => {}
-            DebuggerEvent::BreakPoint(_) => {}
-            DebuggerEvent::FunctionExitWithValue(_) => {}
-            DebuggerEvent::FunctionExitWithError(_) => {}
-            DebuggerEvent::End => {}
+        |eng, mut debugger| {
+            for fn_def in scripts
+                .get(&script)
+                .map(|s| s.value().iter_fn_def())
+                .unwrap()
+            {
+                debugger
+                    .break_points_mut()
+                    .push(BreakPoint::AtFunctionName {
+                        name: fn_def.name.into(),
+                        enabled: true,
+                    });
+            }
+            debugger
+        },
+        |ctx, event, node, _, _| {
+            if let DebuggerEvent::BreakPoint(_) = event {
+                let fn_name = match node {
+                    ASTNode::Stmt(s) => match s {
+                        Stmt::FnCall(f, _) => &f.name,
+                        _ => return,
+                    },
+                    ASTNode::Expr(e) => match e {
+                        Expr::FnCall(f, _) => &f.name,
+                        _ => return,
+                    },
+                };
+                script_data.write().traversals.add(fn_name.into());
+            }
+
+            Ok(DebuggerCommand::Continue)
         },
     );
 }
