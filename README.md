@@ -1,4 +1,4 @@
-# bongtalk
+# bongtalk (WIP)
 ![bongbong with a bong bong crab](assets/bongcrab.png)
 
 (art by @Eryx03 on twitter)
