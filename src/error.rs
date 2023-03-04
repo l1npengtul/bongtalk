@@ -7,7 +7,9 @@ pub enum BongTalkError {
     #[error("Failed to compile script: {0}")]
     Compile(String),
     #[error("Failed to start reader: {0}")]
-    ReaderInit(String)
+    ReaderInit(String),
+    #[error("Failed to run script {0}, {1}")]
+    Script(String, String),
 }
 
 pub type BResult<T> = Result<T, BongTalkError>;

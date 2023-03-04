@@ -99,7 +99,7 @@ fn reading_fn(
     script_data: Arc<RwLock<ScriptData>>,
     control: Receiver<ControlMessage>,
     event: Sender<EventMessage>,
-) {
+) -> Result<(), BongTalkError> {
     let mut engine = Engine::new();
     let resolver = HashmapResolver {
         data: scripts.clone(),
@@ -109,27 +109,141 @@ fn reading_fn(
     // [expression] face <character> says <text> with_extra [metadata]
     // this gets parsed with <character> says <text> => TextSayThing, with modifications on top
 
-    engine
-        .register_custom_operator("says", 20)
-        .expect("Failed to register custom operator! This is a bug, please report it!");
-    engine.register_fn("says", |character: &Dynamic, text: &Dynamic| {
-        // resolve character
-        // TODO
-    });
+    // engine
+    //     .register_custom_operator("says", 20)
+    //     .map_err(|why| BongTalkError::EngineInit(why))?;
+    // engine.register_fn("says", |character: &Dynamic, text: &Dynamic| {
+    //     // resolve character
+    //     // TODO
+    // });
+    //
+    // engine
+    //     .register_custom_operator("face", 10)
+    //     .map_err(|why| BongTalkError::EngineInit(why))?;
+    // engine.register_fn("face", |expression: &Dynamic, text_say: &Dynamic| {
+    //     // TODO
+    // });
+    //
+    // engine
+    //     .register_custom_operator("with_extra", 5)
+    //     .map_err(|why| BongTalkError::EngineInit(why))?;
+    // engine.register_fn("with_extra", |text_say: &Dynamic, data: &Dynamic| {
+    //     // TODO
+    // });
 
-    engine
-        .register_custom_operator("face", 10)
-        .expect("Failed to register custom operator! This is a bug, please report it!");
-    engine.register_fn("face", |expression: &Dynamic, text_say: &Dynamic| {
-        // TODO
-    });
+    // say [character] @ sad | {custom data}: "text"
+    engine.register_custom_syntax_with_state_raw(
+        "say",
+        |symbols, look_ahead, state| {
+            //
+            if !state.is_map() {
+                let tag = state.tag();
+                *state = Dynamic::from_map(Map::new());
+                state.set_tag(tag);
+            }
 
-    engine
-        .register_custom_operator("with_extra", 5)
-        .expect("Failed to register custom operator! This is a bug, please report it!");
-    engine.register_fn("with_extra", |text_say: &Dynamic, data: &Dynamic| {
-        // TODO
-    });
+            match symbols.len() {
+                1 => {
+                    return Ok(Some("[".into()));
+                }
+                2 => {
+                    return Ok(Some("$expr$".into()));
+                }
+                3 => {
+                    return Ok(Some("]".into()));
+                }
+                n => {
+                    if let Some(c) = state
+                        .as_any()
+                        .downcast_ref::<Map>()
+                        .unwrap()
+                        .get("current".into())
+                    {
+                        let current = c.into_immutable_string().unwrap();
+                        if current == "@" {
+                            let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+
+                            if state_map.contains_key("emotion_len".into()) {
+                                state_map.insert("finished_emotion".into(), true.into());
+                            } else {
+                                state_map.insert("emotion_len".into(), (n as u32).into());
+                                return Ok(Some("$expr$".into()));
+                            }
+                        } else if current == "|" {
+                            let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+
+                            if state_map.contains_key("metadata_len".into()) {
+                                state_map.insert("finished_metadata".into(), true.into());
+                            } else {
+                                state_map.insert("metadata_len".into(), (n as u32).into());
+                                return Ok(Some("$expr$".into()));
+                            }
+                        } else if current == ":" {
+                            let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+
+                            return if state_map.contains_key("text_len".into()) {
+                                state_map.insert("finished_text".into(), true.into());
+                                Ok(None)
+                            } else {
+                                state_map.insert("text_len".into(), (n as u32).into());
+                                Ok(Some("$expr$".into()))
+                            };
+                        }
+                    }
+
+                    if look_ahead == "@" {
+                        let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+
+                        if state_map.contains_key("finished_emotion") {
+                            return Err(ParseError(
+                                Box::from(ParseErrorType::DuplicatedProperty("Emotion (@)".into())),
+                                Position::NONE,
+                            ));
+                        }
+
+                        state_map.insert("current".into(), "emotion".into());
+                        return Ok(Some("@".into()));
+                    } else if look_ahead == "|" {
+                        let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+
+                        if state_map.contains_key("finished_metadata") {
+                            return Err(ParseError(
+                                Box::from(ParseErrorType::DuplicatedProperty(
+                                    "Metadata (|)".into(),
+                                )),
+                                Position::NONE,
+                            ));
+                        }
+
+                        state_map.insert("current".into(), "extras".into());
+                        return Ok(Some("|".into()));
+                    } else if look_ahead == ":" {
+                        let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+
+                        if state_map.contains_key("finished_text") {
+                            return Err(ParseError(
+                                Box::from(ParseErrorType::DuplicatedProperty("Text (:)".into())),
+                                Position::NONE,
+                            ));
+                        }
+
+                        state_map.insert("current".into(), "text".into());
+                        return Ok(Some(":".into()));
+                    }
+                }
+            }
+            Err(ParseError(
+                Box::new(ParseErrorType::BadInput(LexError::UnexpectedInput(
+                    "No Input".into(),
+                ))),
+                Position::NONE,
+            ))
+        },
+        false,
+        |context, inputs, state| {
+            //
+        },
+    );
 
     // global/local data stores
 
@@ -431,6 +545,19 @@ fn reading_fn(
             Ok(DebuggerCommand::Continue)
         },
     );
+
+    engine
+        .run_ast(
+            scripts
+                .get(&script)
+                .ok_or(BongTalkError::ReaderInit(format!(
+                    "Script {script} doesn't exist."
+                )))?
+                .value(),
+        )
+        .map_err(|why| BongTalkError::Script(script, why.to_string()))?;
+
+    Ok(())
 }
 
 struct HashmapResolver {
