@@ -1,6 +1,7 @@
 use crate::value::Value;
-use rhai::Dynamic;
+use rhai::{Dynamic, ImmutableString};
 use smartstring::{LazyCompact, SmartString};
+use std::fmt::{Display, Formatter};
 use std::{
     borrow::Cow,
     collections::BTreeMap,
@@ -124,7 +125,31 @@ pub struct Modifier {
     pub postfix: Option<String>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, PartialEq)]
 pub struct CharacterRef {
-    pub identifier: SmartString<LazyCompact>,
+    pub identifier: ImmutableString,
+}
+
+impl CharacterRef {
+    pub fn as_str(&self) -> &str {
+        self.identifier.as_str()
+    }
+}
+
+impl AsRef<str> for CharacterRef {
+    fn as_ref(&self) -> &str {
+        self.identifier.as_str()
+    }
+}
+
+impl From<ImmutableString> for CharacterRef {
+    fn from(value: ImmutableString) -> Self {
+        CharacterRef { identifier: value }
+    }
+}
+
+impl Display for CharacterRef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_ref())
+    }
 }

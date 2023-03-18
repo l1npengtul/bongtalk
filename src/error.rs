@@ -1,3 +1,4 @@
+use crate::character::CharacterRef;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Error)]
@@ -10,6 +11,8 @@ pub enum BongTalkError {
     ReaderInit(String),
     #[error("Failed to run script {0}, {1}")]
     Script(String, String),
+    #[error("Character Reference {0} is invalid.")]
+    InvalidCharacterReference(CharacterRef),
 }
 
 pub type BResult<T> = Result<T, BongTalkError>;

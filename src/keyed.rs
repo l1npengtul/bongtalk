@@ -1,3 +1,6 @@
+use rhai::ImmutableString;
+use smartstring::{LazyCompact, SmartString};
+
 /// A String meant to be keyed (translate)
 #[derive(Clone, Debug, Default, PartialOrd, PartialEq)]
 pub struct Keyed {
@@ -53,5 +56,5 @@ impl<'a> KeyedRef<'a> {
 #[derive(Clone, Debug, PartialOrd, PartialEq)]
 pub(crate) enum KeyedOrRaw {
     Keyed(Keyed),
-    Raw(String),
+    Raw(ImmutableString),
 }

@@ -9,6 +9,7 @@ use dashmap::DashMap;
 use flume::{Receiver, Sender};
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
+use ramhorns::Ramhorns;
 use rhai::{Engine, AST};
 use serde::{Deserialize, Serialize};
 use smartstring::{Compact, LazyCompact, SmartString, SmartStringMode};
@@ -18,7 +19,6 @@ use std::{
     sync::Arc,
     thread::{spawn, JoinHandle},
 };
-use tinytemplate::TinyTemplate;
 #[cfg(all(target_arch = "wasm", target_feature = "wasm"))]
 use wasm_thread::{spawn, JoinHandle};
 
@@ -52,7 +52,7 @@ pub struct BongTalkContext {
     global_data: Arc<DashMap<SmartString<LazyCompact>, Value, RandomState>>,
     characters: Arc<DashMap<SmartString<LazyCompact>, Character, RandomState>>,
     rhai_engine: Arc<RwLock<Engine>>,
-    template: Arc<RwLock<TinyTemplate<'static>>>,
+    template: Arc<RwLock<Ramhorns<RandomState>>>,
     run_counter: Arc<AtomicU32>,
 }
 

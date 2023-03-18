@@ -1,6 +1,6 @@
 use crate::character::CharacterRef;
 use crate::error::BongTalkError;
-use crate::keyed::KeyedOrRaw;
+use crate::keyed::{KeyedOrRaw, KeyedRef};
 use crate::{
     bongtalk::{BongTalkContext, ScriptData},
     character::Character,
@@ -11,17 +11,18 @@ use dashmap::DashMap;
 use flume::{Receiver, Sender};
 use parking_lot::RwLock;
 use rhai::debugger::{BreakPoint, Debugger, DebuggerEvent};
+use rhai::plugin::RhaiResult;
 use rhai::{
     debugger::DebuggerCommand, ASTNode, Dynamic, Engine, EvalAltResult, Expr, ImmutableString,
     LexError, Map, Module, ModuleResolver, ParseError, ParseErrorType, Position, Shared, Stmt,
     Variant, AST,
 };
+use serde::{Deserialize, Serialize};
 use smartstring::{LazyCompact, SmartString};
 use std::str::FromStr;
 #[cfg(not(all(feature = "wasm", target_arch = "wasm")))]
 use std::thread::*;
 use std::{collections::HashMap, sync::Arc};
-use tinytemplate::TinyTemplate;
 #[cfg(all(feature = "wasm", target_arch = "wasm"))]
 use wasm_thread::*;
 
@@ -49,7 +50,7 @@ pub struct ScriptReading {
     global_data: Arc<DashMap<String, Value, RandomState>>,
     characters: Arc<DashMap<String, Arc<RwLock<Character>>, RandomState>>,
     rhai_engine: Arc<RwLock<Engine>>,
-    template: Arc<RwLock<TinyTemplate<'static>>>,
+    template: Arc<RwLock>, // TODO: Ramhorns
 
     current_reading: String,
     do_processing: bool,
@@ -87,6 +88,32 @@ impl Iterator for ScriptReading {
 
     fn next(&mut self) -> Option<Self::Item> {
         todo!()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialOrd, PartialEq, Serialize, Deserialize)]
+pub struct SpokenAction {
+    pub(crate) character: CharacterRef,
+    pub(crate) text: KeyedOrRaw,
+    pub(crate) emotion: Option<ImmutableString>,
+    pub(crate) extra: Option<Value>,
+}
+
+impl SpokenAction {
+    pub fn character(&self) -> &CharacterRef {
+        &self.character
+    }
+
+    pub fn text(&self) -> &KeyedOrRaw {
+        &self.text
+    }
+
+    pub fn emotion(&self) -> &Option<ImmutableString> {
+        &self.emotion
+    }
+
+    pub fn extra(&self) -> &Option<Value> {
+        &self.extra
     }
 }
 
@@ -166,7 +193,7 @@ fn reading_fn(
                             if state_map.contains_key("emotion_len".into()) {
                                 state_map.insert("finished_emotion".into(), true.into());
                             } else {
-                                state_map.insert("emotion_len".into(), (n as u32).into());
+                                state_map.insert("emotion_len".into(), (n as i64).into());
                                 return Ok(Some("$expr$".into()));
                             }
                         } else if current == "|" {
@@ -175,7 +202,7 @@ fn reading_fn(
                             if state_map.contains_key("metadata_len".into()) {
                                 state_map.insert("finished_metadata".into(), true.into());
                             } else {
-                                state_map.insert("metadata_len".into(), (n as u32).into());
+                                state_map.insert("metadata_len".into(), (n as i64).into());
                                 return Ok(Some("$expr$".into()));
                             }
                         } else if current == ":" {
@@ -185,7 +212,7 @@ fn reading_fn(
                                 state_map.insert("finished_text".into(), true.into());
                                 Ok(None)
                             } else {
-                                state_map.insert("text_len".into(), (n as u32).into());
+                                state_map.insert("text_len".into(), (n as i64).into());
                                 Ok(Some("$expr$".into()))
                             };
                         }
@@ -240,8 +267,72 @@ fn reading_fn(
             ))
         },
         false,
-        |context, inputs, state| {
-            //
+        |context, inputs, state| -> RhaiResult {
+            let state_map = state.as_any().downcast_ref::<Map>().unwrap();
+
+            let mut spoken = SpokenAction::default();
+
+            let finished_text = state_map.contains_key("finished_text");
+            let finished_metadata = state_map.contains_key("finished_metadata");
+            let finished_emotion = state_map.contains_key("finished_emotion");
+
+            let character_expr = inputs.get(2).unwrap();
+            let character_eval = context.eval_expression_tree(character_expr)?;
+            let character = if character_eval.is_string() {
+                CharacterRef::from(character_eval.into_immutable_string()?)
+            } else {
+                character_eval.try_cast::<CharacterRef>()
+            };
+
+            if !character.contains_key(character_ref.as_str()) {
+                return Err(Box::new(EvalAltResult::ErrorRuntime(
+                    Dynamic::from(
+                        BongTalkError::InvalidCharacterReference(character_ref)
+                            .to_string()
+                            .into(),
+                    ),
+                    character_expr.position(),
+                )));
+            }
+
+            spoken.character = character;
+
+            if finished_text {
+                let text_len = state_map.get("text_len")?.as_int()?;
+                let eval = context.eval_expression_tree(inputs.get(text_len as usize).unwrap())?;
+
+                let text = if eval.is_string() {
+                    KeyedOrRaw::Raw(eval.into_immutable_string()?)
+                } else {
+                    // turn into keyed
+                    KeyedOrRaw::Keyed(eval.try_cast::<KeyedRef>().ok_or(|why| {}).into())
+                };
+
+                spoken.text = text;
+            }
+
+            if finished_metadata {
+                let metadata_len = state_map.get("metadata_len")?.as_int()?;
+                let eval =
+                    context.eval_expression_tree(inputs.get(metadata_len as usize).unwrap())?;
+
+                let metadata = Value::from(eval);
+
+                spoken.extra = Some(metadata);
+            }
+
+            if finished_emotion {
+                let text_len = state_map.get("text_len")?.as_int()?;
+                let eval = context.eval_expression_tree(inputs.get(text_len as usize).unwrap())?;
+
+                let emotion = eval.into_immutable_string()?;
+
+                spoken.emotion = Some(emotion);
+            }
+
+            // TODO: implement say blocking iter
+
+            Ok(Dynamic::UNIT)
         },
     );
 
@@ -433,7 +524,7 @@ fn reading_fn(
     engine.register_fn("get_character", |key: &str| -> Option<CharacterRef> {
         if let Some(character) = character.get(key) {
             Some(CharacterRef {
-                identifier: character.identifier.clone(),
+                identifier: ImmutableString::from(character.identifier.clone()),
             })
         } else {
             None
@@ -507,6 +598,8 @@ fn reading_fn(
             }
 
             // TODO: implement ask
+
+            Ok(Dynamic::UNIT)
         },
     );
 
@@ -538,6 +631,7 @@ fn reading_fn(
                         Expr::FnCall(f, _) => &f.name,
                         _ => return,
                     },
+                    _ => return,
                 };
                 script_data.write().traversals.add(fn_name.into());
             }
