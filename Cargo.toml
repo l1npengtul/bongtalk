@@ -18,9 +18,17 @@ thiserror = "1.0"
 ahash = "0.8"
 flume = "0.10"
 dashmap = "5.4"
-moka = "0.10"
 parking_lot = "0.12"
 smartstring = "1.0"
+mini-moka = "0.10"
+bbscope = "0.1"
+quick-xml = "0.28"
+rgb = "0.8"
+lending-iterator = "0.1"
+
+[dependencies.csscolorparser]
+version = "0.6"
+features = ["named-colors", "rust-rgb"]
 
 [dependencies.serde]
 version = "1.0"

@@ -47,12 +47,12 @@ pub struct ScriptData {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BongTalkContext {
-    scripts: Arc<DashMap<SmartString<LazyCompact>, Arc<RwLock<AST>>, RandomState>>,
-    script_data: HashMap<SmartString<LazyCompact>, Arc<RwLock<ScriptData>>, RandomState>,
+    scripts: Arc<DashMap<SmartString<LazyCompact>, AST, RandomState>>,
+    script_data: HashMap<SmartString<LazyCompact>, ScriptData, RandomState>,
     global_data: Arc<DashMap<SmartString<LazyCompact>, Value, RandomState>>,
     characters: Arc<DashMap<SmartString<LazyCompact>, Character, RandomState>>,
     rhai_engine: Arc<RwLock<Engine>>,
-    template: Arc<RwLock<Ramhorns<RandomState>>>,
+    template_engine: Arc<RwLock<Ramhorns<RandomState>>>,
     run_counter: Arc<AtomicU32>,
 }
 
@@ -74,7 +74,7 @@ impl BongTalkContext {
             Err(why) => return Err(BongTalkError::Compile(why.to_string())),
         };
 
-        self.scripts.insert(name.as_ref().to_string(), compiled);
+        self.scripts.insert(name.as_ref().into(), compiled);
         Ok(())
     }
 
@@ -86,8 +86,7 @@ impl BongTalkContext {
             )));
         }
 
-        self.scripts
-            .insert(name.as_ref().to_string(), Arc::new(ast));
+        self.scripts.insert(name.as_ref().into(), ast);
         Ok(())
     }
 

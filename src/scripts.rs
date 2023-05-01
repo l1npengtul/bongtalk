@@ -1,6 +1,7 @@
 use crate::character::CharacterRef;
 use crate::error::BongTalkError;
 use crate::keyed::{KeyedOrRaw, KeyedRef};
+use crate::scripts::EventMessage::RhaiError;
 use crate::{
     bongtalk::{BongTalkContext, ScriptData},
     character::Character,
@@ -9,13 +10,15 @@ use crate::{
 use ahash::RandomState;
 use dashmap::DashMap;
 use flume::{Receiver, Sender};
+use mini_moka::sync::Cache;
 use parking_lot::RwLock;
+use ramhorns::Template;
 use rhai::debugger::{BreakPoint, Debugger, DebuggerEvent};
 use rhai::plugin::RhaiResult;
 use rhai::{
-    debugger::DebuggerCommand, ASTNode, Dynamic, Engine, EvalAltResult, Expr, ImmutableString,
-    LexError, Map, Module, ModuleResolver, ParseError, ParseErrorType, Position, Shared, Stmt,
-    Variant, AST,
+    debugger::DebuggerCommand, ASTNode, Dynamic, Engine, EvalAltResult, Expr, Expression,
+    ImmutableString, LexError, Map, Module, ModuleResolver, ParseError, ParseErrorType, Position,
+    Shared, Stmt, Variant, AST,
 };
 use serde::{Deserialize, Serialize};
 use smartstring::{LazyCompact, SmartString};
@@ -26,8 +29,13 @@ use std::{collections::HashMap, sync::Arc};
 #[cfg(all(feature = "wasm", target_arch = "wasm"))]
 use wasm_thread::*;
 
-pub enum ControlMessage {}
+#[derive(Clone, Debug, PartialEq)]
+pub enum ControlMessage {
+    Continue,
+    ChoicePicked(i32),
+}
 
+#[derive(Clone, Debug, PartialEq)]
 pub enum EventMessage {
     RhaiError(EvalAltResult),
     BongTalkError(BongTalkError),
@@ -35,7 +43,7 @@ pub enum EventMessage {
     Say(KeyedOrRaw),
     Sleep(u64),
     Choice(Vec<Choice>),
-    Event { ident: ImmutableString, data: Value },
+    Event(ScriptEvent),
 }
 
 #[derive(Clone, Debug, PartialOrd, PartialEq)]
@@ -50,7 +58,7 @@ pub struct ScriptReading {
     global_data: Arc<DashMap<String, Value, RandomState>>,
     characters: Arc<DashMap<String, Arc<RwLock<Character>>, RandomState>>,
     rhai_engine: Arc<RwLock<Engine>>,
-    template: Arc<RwLock>, // TODO: Ramhorns
+    templates: Arc<Cache<u64, Template<'static>, RandomState>>, // TODO: Ramhorns
 
     current_reading: String,
     do_processing: bool,
@@ -68,7 +76,7 @@ impl ScriptReading {
         global_data: Arc<DashMap<String, Value, RandomState>>,
         characters: Arc<RwLock<Character>>,
         rhai_engine: Arc<RwLock<Engine>>,
-        template: Arc<RwLock<TinyTemplate<'static>>>,
+        template: Arc<Cache<u64, Template<'static>, RandomState>>,
         current_reading: String,
         do_processing: bool,
     ) -> Result<Self, BongTalkError> {
@@ -117,8 +125,14 @@ impl SpokenAction {
     }
 }
 
+#[derive(Clone, Debug, PartialOrd, PartialEq)]
+pub struct ScriptEvent {
+    pub name: SmartString<LazyCompact>,
+    pub data: Option<Value>,
+}
+
 #[allow(deprecated)]
-fn reading_fn(
+fn reading_fn_setup(
     script: String,
     scripts: Arc<DashMap<SmartString<LazyCompact>, AST, RandomState>>,
     global_data: Arc<DashMap<SmartString<LazyCompact>, Value, RandomState>>,
@@ -126,7 +140,7 @@ fn reading_fn(
     script_data: Arc<RwLock<ScriptData>>,
     control: Receiver<ControlMessage>,
     event: Sender<EventMessage>,
-) -> Result<(), BongTalkError> {
+) -> Result<Engine, BongTalkError> {
     let mut engine = Engine::new();
     let resolver = HashmapResolver {
         data: scripts.clone(),
@@ -157,6 +171,76 @@ fn reading_fn(
     // engine.register_fn("with_extra", |text_say: &Dynamic, data: &Dynamic| {
     //     // TODO
     // });
+
+    // event [event] | {custom data}
+    engine.register_custom_syntax_with_state_raw(
+        "event",
+        |symbols, look_ahead, state| match symbols.len() {
+            1 => Ok(Some("$expr$".into())),
+            2 => match look_ahead {
+                "" => Ok(Some("$$none$$".into())),
+                "|" => Ok(Some("|".into())),
+                i => Err(ParseError(
+                    Box::from(ParseErrorType::BadInput(LexError::UnexpectedInput(
+                        i.to_string(),
+                    ))),
+                    Position::NONE,
+                )),
+            },
+            3 => Ok(Some("$expr$".into())),
+            4 => Ok(Some("$$some$$".into())),
+            _ => Err(ParseError(
+                Box::from(ParseErrorType::BadInput(LexError::UnexpectedInput(
+                    look_ahead.to_string(),
+                ))),
+                Position::NONE,
+            )),
+        },
+        false,
+        |context, inputs, state| {
+            let key = inputs.last().unwrap().get_string_value().unwrap();
+
+            let event_name = match inputs.get(2) {
+                Some(s) => context.eval_expression_tree(s)?.into_immutable_string()?,
+                None => {
+                    return Err(ParseError(
+                        Box::new(ParseErrorType::BadInput(LexError::UnexpectedInput(
+                            "No Input".into(),
+                        ))),
+                        Position::NONE,
+                    ))
+                }
+            };
+
+            let event = match key {
+                "$$none$$" => {
+                    ScriptEvent {
+                        name: event_name.into_owned().into(), // todo: find more better way to do this, maybe a PR
+                        data: None,
+                    }
+                }
+                "$$some$$" => {
+                    let metadata = inputs.get(4).unwrap().eval_with_context(context)?.into();
+                    ScriptEvent {
+                        name: event_name.into_owned().into(), // todo: find more better way to do this, maybe a PR
+                        data: Some(metadata),
+                    }
+                }
+                i => {
+                    return Err(ParseError(
+                        Box::new(ParseErrorType::BadInput(LexError::UnexpectedInput(
+                            format!("Expected end token, got {}", i),
+                        ))),
+                        Position::NONE,
+                    ))
+                }
+            };
+
+            // TODO: implement send event
+
+            Ok(Dynamic::UNIT)
+        },
+    );
 
     // say [character] @ sad | {custom data}: "text"
     engine.register_custom_syntax_with_state_raw(
@@ -640,18 +724,18 @@ fn reading_fn(
         },
     );
 
-    engine
-        .run_ast(
-            scripts
-                .get(&script)
-                .ok_or(BongTalkError::ReaderInit(format!(
-                    "Script {script} doesn't exist."
-                )))?
-                .value(),
-        )
-        .map_err(|why| BongTalkError::Script(script, why.to_string()))?;
+    // engine
+    //     .run_ast(
+    //         scripts
+    //             .get(&script)
+    //             .ok_or(BongTalkError::ReaderInit(format!(
+    //                 "Script {script} doesn't exist."
+    //             )))?
+    //             .value(),
+    //     )
+    //     .map_err(|why| BongTalkError::Script(script, why.to_string()))?;
 
-    Ok(())
+    Ok(engine)
 }
 
 struct HashmapResolver {
