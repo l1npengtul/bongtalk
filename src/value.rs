@@ -1,4 +1,5 @@
-use rhai::Dynamic;
+use lending_iterator::LendingIterator;
+use rhai::{Blob, Dynamic, Map};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
@@ -145,6 +146,7 @@ pub enum Value {
     Int(i64),
     String(String),
     Array(Vec<Value>),
+    Blob(Vec<u8>),
     Map(BTreeMap<String, Value>),
 }
 
@@ -172,6 +174,9 @@ impl Display for Value {
             Value::Map(map) => {
                 write!(f, "{map:?}")
             }
+            Value::Blob(b) => {
+                write!(f, "{b:#x?}")
+            }
         }
     }
 }
@@ -187,6 +192,7 @@ impl From<Value> for Dynamic {
             Value::Int(i) => Dynamic::from_int(i),
             Value::String(s) => Dynamic::from_str(&s),
             Value::Array(a) => a.into(),
+            Value::Blob(b) => Dynamic::from_blob(Blob::from(b)),
             Value::Map(m) => m.into(),
         }
     }
@@ -200,7 +206,51 @@ impl From<&Value> for Dynamic {
             Value::Int(i) => Dynamic::from_int(*i),
             Value::String(s) => Dynamic::from_str(s),
             Value::Array(a) => a.into(),
+            Value::Blob(b) => Dynamic::from_blob(Blob::from(b.as_slice())),
             Value::Map(m) => m.into(),
+        }
+    }
+}
+
+impl From<Dynamic> for Value {
+    fn from(value: Dynamic) -> Self {
+        Value::from(&value)
+    }
+}
+impl From<&Dynamic> for Value {
+    fn from(value: &Dynamic) -> Self {
+        if value.is_unit() {
+            Value::Null
+        } else if value.is_int() {
+            Value::Int(value.as_int().unwrap())
+        } else if value.is_float() {
+            Value::Float(value.as_float().unwrap())
+        } else if value.is_bool() {
+            Value::Bool(value.as_bool().unwrap())
+        } else if value.is_char() {
+            Value::String(value.as_char().unwrap().to_string())
+        } else if value.is_string() {
+            Value::String(value.into_immutable_string().unwrap().to_string())
+        } else if value.is_array() {
+            Value::Array(
+                value
+                    .into_array()
+                    .map(|x| {
+                        x.into_iter()
+                            .map(|v| Value::from(v))
+                            .collect::<Vec<Value>>()
+                    })
+                    .unwrap(),
+            )
+        } else if value.is_blob() {
+            Value::Blob(value.into_blob().unwrap())
+        } else if value.is_map() {
+            let map = value.read_lock::<Map>().unwrap();
+            Value::Map(
+                map.into_iter()
+                    .map(|(k, v)| (k.to_string(), Value::from(v)))
+                    .collect(),
+            )
         }
     }
 }

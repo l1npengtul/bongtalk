@@ -9,75 +9,50 @@ use crate::{
 };
 use ahash::RandomState;
 use dashmap::DashMap;
-use flume::{Receiver, Sender};
-use mini_moka::sync::Cache;
-use parking_lot::RwLock;
-use ramhorns::Template;
+use flume::{Receiver, RecvError, Sender};
+use ramhorns::{Ramhorns, Template};
 use rhai::debugger::{BreakPoint, Debugger, DebuggerEvent};
 use rhai::plugin::RhaiResult;
 use rhai::{
     debugger::DebuggerCommand, ASTNode, Dynamic, Engine, EvalAltResult, Expr, Expression,
-    ImmutableString, LexError, Map, Module, ModuleResolver, ParseError, ParseErrorType, Position,
-    Shared, Stmt, Variant, AST,
+    Identifier, ImmutableString, LexError, Map, Module, ModuleResolver, ParseError, ParseErrorType,
+    Position, Shared, Stmt, Variant, AST,
 };
 use serde::{Deserialize, Serialize};
 use smartstring::{LazyCompact, SmartString};
 use std::str::FromStr;
+use std::sync::RwLock;
 #[cfg(not(all(feature = "wasm", target_arch = "wasm")))]
-use std::thread::*;
+use std::thread::{Builder, JoinHandle, Thread};
 use std::{collections::HashMap, sync::Arc};
 #[cfg(all(feature = "wasm", target_arch = "wasm"))]
-use wasm_thread::*;
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum ControlMessage {
-    Continue,
-    ChoicePicked(i32),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum EventMessage {
-    RhaiError(EvalAltResult),
-    BongTalkError(BongTalkError),
-    Exit,
-    Say(KeyedOrRaw),
-    Sleep(u64),
-    Choice(Vec<Choice>),
-    Event(ScriptEvent),
-}
-
-#[derive(Clone, Debug, PartialOrd, PartialEq)]
-pub struct Choice {
-    display: KeyedOrRaw,
-    value: Value,
-}
+use wasm_thread::{Builder, JoinHandle, Thread};
 
 pub struct ScriptReading {
-    scripts: Arc<AST>,
+    script: Arc<AST>,
     script_data: Arc<RwLock<ScriptData>>,
-    global_data: Arc<DashMap<String, Value, RandomState>>,
-    characters: Arc<DashMap<String, Arc<RwLock<Character>>, RandomState>>,
-    rhai_engine: Arc<RwLock<Engine>>,
-    templates: Arc<Cache<u64, Template<'static>, RandomState>>, // TODO: Ramhorns
-
-    current_reading: String,
+    global_data: Arc<DashMap<ImmutableString, Arc<RwLock<Value>>, RandomState>>,
+    characters: Arc<DashMap<ImmutableString, Arc<RwLock<Character>>, RandomState>>,
+    template_engine: Arc<RwLock<Ramhorns<RandomState>>>,
+    current_reading: ImmutableString,
     do_processing: bool,
+
+    rhai_engine: Engine,
     thread: Option<JoinHandle<()>>,
-    control_sender: Sender<ControlMessage>,
-    event_receiver: Receiver<EventMessage>,
+    control_sender: Arc<Sender<ControlMessage>>,
+    event_receiver: Arc<Receiver<EventMessage>>,
 }
 
 impl ScriptReading {
     #[allow(clippy::too_many_arguments)]
     #[allow(deprecated)]
     pub fn new(
-        scripts: Arc<AST>,
+        script: Arc<AST>,
         script_data: Arc<RwLock<ScriptData>>,
-        global_data: Arc<DashMap<String, Value, RandomState>>,
-        characters: Arc<RwLock<Character>>,
-        rhai_engine: Arc<RwLock<Engine>>,
-        template: Arc<Cache<u64, Template<'static>, RandomState>>,
-        current_reading: String,
+        global_data: Arc<DashMap<ImmutableString, Arc<RwLock<Value>>, RandomState>>,
+        characters: Arc<DashMap<ImmutableString, Arc<RwLock<Character>>, RandomState>>,
+        rhai_engine: &Engine,
+        current_reading: ImmutableString,
         do_processing: bool,
     ) -> Result<Self, BongTalkError> {
         // register debugger interface
@@ -97,6 +72,39 @@ impl Iterator for ScriptReading {
     fn next(&mut self) -> Option<Self::Item> {
         todo!()
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ControlMessage {
+    Continue,
+    ChoicePicked(i32),
+    Abort,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventMessage {
+    RhaiError(EvalAltResult),
+    BongTalkError(BongTalkError),
+    Exit,
+    Say(SpokenAction),
+    Sleep(u64),
+    Choice(Question),
+    Event(ScriptEvent),
+}
+
+#[derive(Clone, Debug, PartialOrd, PartialEq)]
+pub struct Question {
+    pub(crate) text: KeyedOrRaw,
+    pub(crate) character: Option<CharacterRef>,
+    pub(crate) emotion: Option<ImmutableString>,
+    pub(crate) extra: Option<Value>,
+    pub(crate) choices: Vec<Choice>,
+}
+
+#[derive(Clone, Debug, PartialOrd, PartialEq)]
+pub struct Choice {
+    display: KeyedOrRaw,
+    value: Value,
 }
 
 #[derive(Clone, Debug, Default, PartialOrd, PartialEq, Serialize, Deserialize)]
@@ -132,47 +140,17 @@ pub struct ScriptEvent {
 }
 
 #[allow(deprecated)]
-fn reading_fn_setup(
-    script: String,
-    scripts: Arc<DashMap<SmartString<LazyCompact>, AST, RandomState>>,
-    global_data: Arc<DashMap<SmartString<LazyCompact>, Value, RandomState>>,
-    character: Arc<DashMap<SmartString<LazyCompact>, Character, RandomState>>,
+fn engine_setup(
+    script: Arc<AST>,
     script_data: Arc<RwLock<ScriptData>>,
-    control: Receiver<ControlMessage>,
-    event: Sender<EventMessage>,
+    global_data: Arc<DashMap<ImmutableString, Arc<RwLock<Value>>, RandomState>>,
+    characters: Arc<DashMap<ImmutableString, Arc<RwLock<Character>>, RandomState>>,
+    base_engine: Engine,
+    control_receiver: Arc<Receiver<ControlMessage>>,
+    event_sender: Arc<Sender<EventMessage>>,
 ) -> Result<Engine, BongTalkError> {
-    let mut engine = Engine::new();
-    let resolver = HashmapResolver {
-        data: scripts.clone(),
-    };
-
-    // ex)
-    // [expression] face <character> says <text> with_extra [metadata]
-    // this gets parsed with <character> says <text> => TextSayThing, with modifications on top
-
-    // engine
-    //     .register_custom_operator("says", 20)
-    //     .map_err(|why| BongTalkError::EngineInit(why))?;
-    // engine.register_fn("says", |character: &Dynamic, text: &Dynamic| {
-    //     // resolve character
-    //     // TODO
-    // });
-    //
-    // engine
-    //     .register_custom_operator("face", 10)
-    //     .map_err(|why| BongTalkError::EngineInit(why))?;
-    // engine.register_fn("face", |expression: &Dynamic, text_say: &Dynamic| {
-    //     // TODO
-    // });
-    //
-    // engine
-    //     .register_custom_operator("with_extra", 5)
-    //     .map_err(|why| BongTalkError::EngineInit(why))?;
-    // engine.register_fn("with_extra", |text_say: &Dynamic, data: &Dynamic| {
-    //     // TODO
-    // });
-
-    // event [event] | {custom data}
+    let mut engine = base_engine; // muhahahahaahahahahaha ive repossessed your engine
+                                  // event [event] | {custom data}
     engine.register_custom_syntax_with_state_raw(
         "event",
         |symbols, look_ahead, state| match symbols.len() {
@@ -203,12 +181,12 @@ fn reading_fn_setup(
             let event_name = match inputs.get(2) {
                 Some(s) => context.eval_expression_tree(s)?.into_immutable_string()?,
                 None => {
-                    return Err(ParseError(
+                    return Err(RhaiError::from(ParseError(
                         Box::new(ParseErrorType::BadInput(LexError::UnexpectedInput(
                             "No Input".into(),
                         ))),
                         Position::NONE,
-                    ))
+                    )))
                 }
             };
 
@@ -227,16 +205,16 @@ fn reading_fn_setup(
                     }
                 }
                 i => {
-                    return Err(ParseError(
+                    return Err(RhaiError::from(ParseError(
                         Box::new(ParseErrorType::BadInput(LexError::UnexpectedInput(
                             format!("Expected end token, got {}", i),
                         ))),
                         Position::NONE,
-                    ))
+                    )))
                 }
             };
 
-            // TODO: implement send event
+            event_sender.send(EventMessage::Event(event))?;
 
             Ok(Dynamic::UNIT)
         },
@@ -265,14 +243,13 @@ fn reading_fn_setup(
                 }
                 n => {
                     if let Some(c) = state
-                        .as_any()
-                        .downcast_ref::<Map>()
-                        .unwrap()
-                        .get("current".into())
+                        .read_lock::<Map>()
+                        .map(|x| x.get("current".into()))
+                        .flatten()
                     {
                         let current = c.into_immutable_string().unwrap();
                         if current == "@" {
-                            let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+                            let mut state_map = state.write_lock::<Map>().unwrap();
 
                             if state_map.contains_key("emotion_len".into()) {
                                 state_map.insert("finished_emotion".into(), true.into());
@@ -281,7 +258,7 @@ fn reading_fn_setup(
                                 return Ok(Some("$expr$".into()));
                             }
                         } else if current == "|" {
-                            let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+                            let mut state_map = state.write_lock::<Map>().unwrap();
 
                             if state_map.contains_key("metadata_len".into()) {
                                 state_map.insert("finished_metadata".into(), true.into());
@@ -290,7 +267,7 @@ fn reading_fn_setup(
                                 return Ok(Some("$expr$".into()));
                             }
                         } else if current == ":" {
-                            let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+                            let mut state_map = state.write_lock::<Map>().unwrap();
 
                             return if state_map.contains_key("text_len".into()) {
                                 state_map.insert("finished_text".into(), true.into());
@@ -303,7 +280,7 @@ fn reading_fn_setup(
                     }
 
                     if look_ahead == "@" {
-                        let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+                        let mut state_map = state.write_lock::<Map>().unwrap();
 
                         if state_map.contains_key("finished_emotion") {
                             return Err(ParseError(
@@ -315,7 +292,7 @@ fn reading_fn_setup(
                         state_map.insert("current".into(), "emotion".into());
                         return Ok(Some("@".into()));
                     } else if look_ahead == "|" {
-                        let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+                        let mut state_map = state.write_lock::<Map>().unwrap();
 
                         if state_map.contains_key("finished_metadata") {
                             return Err(ParseError(
@@ -329,7 +306,7 @@ fn reading_fn_setup(
                         state_map.insert("current".into(), "extras".into());
                         return Ok(Some("|".into()));
                     } else if look_ahead == ":" {
-                        let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+                        let mut state_map = state.write_lock::<Map>().unwrap();
 
                         if state_map.contains_key("finished_text") {
                             return Err(ParseError(
@@ -352,7 +329,7 @@ fn reading_fn_setup(
         },
         false,
         |context, inputs, state| -> RhaiResult {
-            let state_map = state.as_any().downcast_ref::<Map>().unwrap();
+            let state_map = state.read_lock::<Map>().unwrap();
 
             let mut spoken = SpokenAction::default();
 
@@ -414,7 +391,17 @@ fn reading_fn_setup(
                 spoken.emotion = Some(emotion);
             }
 
-            // TODO: implement say blocking iter
+            event_sender.clone().send(EventMessage::Say(spoken))?;
+
+            match control_receiver.clone().recv() {
+                Ok(ctrl) => match ctrl {
+                    ControlMessage::Abort => return Ok(Dynamic::UNIT),
+                    _ => {}
+                },
+                Err(why) => {
+                    return Err(why.to_string().into());
+                }
+            }
 
             Ok(Dynamic::UNIT)
         },
@@ -642,12 +629,12 @@ fn reading_fn_setup(
                 state.set_tag(2);
                 return Ok(Some("$block$".into()));
             } else if state.tag() == 2 {
-                let state_map = state.as_any_mut().downcast_mut::<Map>().unwrap();
+                let mut state_map = state.write_lock::<Map>().unwrap();
                 let this_len = (symbols.len() / 3) - 2;
                 let ilen = symbols.len() - 1 as u32;
                 state_map.insert(this_len.into(), vec![ilen - 2, ilen].into());
                 return if look_ahead == "}" {
-                    let state_map = state.as_any().downcast_ref::<Map>().unwrap().keys().len() - 1;
+                    let state_map = state.read_lock::<Map>().unwrap().keys().len() - 1;
                     state.set_tag(state_map as i32);
                     Ok(None)
                 } else {
@@ -665,15 +652,87 @@ fn reading_fn_setup(
         false,
         |context, inputs, state| {
             let counts = state.tag();
+            let mut question = Question {
+                text: "".into(),
+                character: None,
+                emotion: None,
+                extra: None,
+                choices: vec![],
+            };
 
-            let ask = context.eval_expression_tree(
-                inputs
-                    .get(0)
-                    .ok_or(Err("Key Expression Missing".to_string()))?,
-            )?;
+            let ask = {
+                let q = context.eval_expression_tree(
+                    inputs
+                        .get(0)
+                        .ok_or(Err("Key Expression Missing".to_string()))?,
+                )?;
+
+                // see if array
+                // 1 => text
+                // 2 => character, text
+                // 3 => character, text, emotion
+                // 4 => character, text, emotion, additional info
+                if let Ok(question_arr) = q.into_array() {
+                    if question_arr.len() == 0 || question_arr.len() > 4 {
+                        Err("Invalid Question Array: Len > 0!".into())
+                    }
+                    if question_arr.len() >= 1 {
+                        question.text = match question_arr
+                            .get(0)
+                            .map(|x| x.into_immutable_string().ok())
+                            .flatten()
+                        {
+                            Some(t) => t.into(),
+                            None => return Err("Invalid Text!".into()),
+                        }
+                    } else if question_arr.len() >= 2 {
+                        question.character = match question_arr
+                            .get(1)
+                            .map(|x| x.into_immutable_string().ok())
+                            .flatten()
+                        {
+                            Some(t) => {
+                                if !characters.contains_key(&t) {
+                                    // TODO: Add default non-existant characters
+                                    return Err("Invalid Character!".into());
+                                }
+                                Some(t.into())
+                            }
+                            None => return Err("Invalid Character!".into()),
+                        }
+                    } else if question_arr.len() >= 3 {
+                        question.emotion = match question_arr
+                            .get(2)
+                            .map(|x| x.into_immutable_string().ok())
+                            .flatten()
+                        {
+                            Some(t) => Some(t.into()),
+                            None => return Err("Invalid Emotion!".into()),
+                        }
+                    } else if question_arr.len() >= 4 {
+                        question.extra = match question_arr.get(3) {
+                            Some(t) => Some(Value::from(t)),
+                            None => return Err("Invalid Text!".into()),
+                        }
+                    }
+                } else if let Some(map) = q.read_lock::<Map>() {
+                    if map.is_empty() {
+                        Err("Invalid Question Object: Len > 0!".into())
+                    }
+
+                    question.text =
+                        match map.get("text").unwrap_or_default().into_immutable_string() {
+                            Ok(txt) => txt,
+                            Err(why) => {}
+                        };
+                }
+            };
+
+            // see if it
+
             let mut options =
                 HashMap::with_capacity_and_hasher(counts as usize, RandomState::new());
-            for (_, value) in state.as_any().downcast_ref::<Map>().unwrap() {
+            for (_, value) in state.read_lock::<Map>().unwrap() {
                 if let Ok(lenarr) = value.into_typed_array::<u32>() {
                     let keyed = context.eval_expression_tree(&inputs[lenarr[0] as usize])?;
                     let block_run = &inputs[lenarr[1] as usize];
@@ -681,7 +740,7 @@ fn reading_fn_setup(
                 }
             }
 
-            // TODO: implement ask
+            event_sender.clone().send(EventMessage::Choice());
 
             Ok(Dynamic::UNIT)
         },
@@ -736,35 +795,4 @@ fn reading_fn_setup(
     //     .map_err(|why| BongTalkError::Script(script, why.to_string()))?;
 
     Ok(engine)
-}
-
-struct HashmapResolver {
-    data: Arc<DashMap<String, Arc<RwLock<AST>>, RandomState>>,
-}
-
-impl ModuleResolver for HashmapResolver {
-    fn resolve(
-        &self,
-        engine: &Engine,
-        _source: Option<&str>,
-        path: &str,
-        pos: Position,
-    ) -> Result<Shared<Module>, Box<EvalAltResult>> {
-        let ast = self
-            .data
-            .get(path)
-            .ok_or(Box::new(EvalAltResult::ErrorModuleNotFound(
-                path.to_string(),
-                pos,
-            )))?
-            .value()
-            .clone()
-            .read();
-
-        Ok(Shared::new(Module::from(Module::eval_ast_as_new(
-            rhai::Scope::new(),
-            &ast,
-            engine,
-        ))))
-    }
 }
